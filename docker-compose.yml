@@ -1,0 +1,12 @@
+services:
+  ip-manager:
+    build: .
+    container_name: nokia-ip-manager
+    ports:
+      - "5001:5001"
+    volumes:
+      # 호스트의 config 디렉토리를 컨테이너 /config 에 마운트 (읽기 전용)
+      - ../config:/config:ro
+    environment:
+      - CONFIG_DIR=/config
+    restart: unless-stopped
