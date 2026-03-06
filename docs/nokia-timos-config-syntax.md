@@ -201,12 +201,12 @@ RE_OS_VERSION = re.compile(
 ```
     router
         interface "p1/1/7"
-            address 10.230.32.141/30
+            address 192.0.2.1/30
             port 1/1/7
             no shutdown
         exit
         interface "system"
-            address 10.230.32.253/32
+            address 192.0.2.254/32
         exit
     exit
 ```
@@ -267,8 +267,8 @@ if trimmed in ('router', 'router Base'):
 
 ```
         interface "LAG1"
-            address 10.230.68.17/30
-            description "LAG1_Trunk_peer_device"
+            address 192.0.2.5/30
+            description "LAG1_Trunk_PeerRouter-A"
             port lag-1
             no shutdown
         exit
@@ -282,7 +282,7 @@ if trimmed in ('router', 'router Base'):
 
 ```
         interface "system"
-            address 10.230.40.1/32
+            address 192.0.2.100/32
             no shutdown
         exit
 ```
@@ -302,17 +302,17 @@ if trimmed in ('router', 'router Base'):
 
 **description 포함**:
 ```
-        static-route 124.66.177.128/26 next-hop 124.66.189.78 description "SKGAS_IBS_Internet_5M_1"
+        static-route 198.51.100.128/26 next-hop 198.51.100.254 description "Customer-A-Internet-10M"
 ```
 
 **metric 포함**:
 ```
-        static-route 124.66.178.0/24 next-hop 210.211.95.42 metric 10 description "Kakao_Ent_Internet_1"
+        static-route 203.0.113.0/24 next-hop 203.0.113.254 metric 10 description "Customer-B-Internet"
 ```
 
 **cpe-check 포함** (Nokia 전용 CPE 상태 확인):
 ```
-        static-route 124.66.178.0/24 next-hop 124.66.189.66 cpe-check 124.66.189.66 drop-count 1 description "..."
+        static-route 203.0.113.0/24 next-hop 203.0.113.1 cpe-check 203.0.113.1 drop-count 1 description "..."
 ```
 
 **black-hole** (null route, IP 없음):
@@ -325,9 +325,9 @@ if trimmed in ('router', 'router Base'):
 prefix와 next-hop이 계층 블록으로 분리됩니다.
 
 ```
-        static-route-entry 61.97.2.128/27
-            next-hop 61.97.1.118
-                description "SKME_Seosan_Naeoe_internet"
+        static-route-entry 198.51.100.128/27
+            next-hop 198.51.100.1
+                description "SiteA-Internet-Primary"
                 no shutdown
             exit
         exit
@@ -437,8 +437,8 @@ Nokia 7750 SR의 BB(Broadband) 장비는 인터페이스 IP를 `router Base`가 
         exit
         ies 10 customer 1 create
             interface "p1/1/4" create
-                description "To-peer_device_P1/1/4"
-                address 211.45.50.245/30
+                description "To-RouterB_P1/1/4"
+                address 203.0.113.1/30
                 icmp
                     no mask-reply
                 exit
@@ -468,8 +468,8 @@ Nokia 7750 SR의 BB(Broadband) 장비는 인터페이스 IP를 `router Base`가 
         exit
         ies 10 customer 1 create         ← 실제 설정 블록
             interface "p1/1/4" create
-                description "To-peer"
-                address 211.45.50.245/30
+                description "To-RouterB"
+                address 203.0.113.1/30
                 sap 1/1/4 create
                     ...
                 exit
@@ -485,8 +485,8 @@ Nokia 7750 SR의 BB(Broadband) 장비는 인터페이스 IP를 `router Base`가 
 
 ```
             interface "p3/1/10" create
-                description "DNS(SK-Net.com)#1_HA"
-                address 168.154.224.2/25
+                description "Customer-ServiceA-Primary"
+                address 203.0.113.128/25
                 icmp
                     ...
                 exit
@@ -639,8 +639,8 @@ B:hostname# admin display-config       ← B (Standby) 상태 프롬프트
 파일명의 장비명과 config 내부 `name "..."` 값이 다를 수 있습니다.
 
 예시:
-- 파일명: `SK-Net_GwanHun2F_7210SAS_MPLS_2_20260220.txt`
-- config 내 hostname: `SK-Net_GwanHun2F_7750SR_MPLS_2`
+- 파일명: `Net_SiteA_7210SAS_MPLS_2_20260101.txt`
+- config 내 hostname: `Net_SiteA_7750SR_MPLS_2`
 
 **권장 전략**: 파일명이 아닌 config 내부 `name` 값을 장비 식별자로 사용하세요.
 
@@ -926,4 +926,4 @@ def parse_static_routes(config_text: str) -> list[dict]:
 ---
 
 *최종 업데이트: 2026-03-06*
-*분석 대상: Nokia-Config-IP-Manager 프로젝트 실제 config 파일 297개 (96개 장비)*
+*Nokia SR OS 다양한 버전의 config 파일 분석 결과를 바탕으로 작성*
