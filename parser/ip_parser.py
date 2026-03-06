@@ -75,6 +75,9 @@ RE_IFACE_NAME     = re.compile(r'^interface\s+"([^"]+)"')
 RE_ADDRESS        = re.compile(r'^address\s+([\d.]+/\d+)')
 RE_PORT_REF       = re.compile(r'^port\s+([\w/-]+)')
 RE_DESCRIPTION    = re.compile(r'^description\s+"([^"]+)"')
+RE_IES_HEADER     = re.compile(r'^ies\s+\d+')
+RE_IES_IFACE      = re.compile(r'^interface\s+"([^"]+)"\s+create')
+RE_SAP_PORT       = re.compile(r'^sap\s+([\w/.-]+)\s+create')
 
 # Peer 추출 정규식 (인터페이스/포트 description에서)
 RE_PEER_TRUNK     = re.compile(r'Trunk[_\-]([A-Za-z0-9_\-]+?(?:MPLS|SAR|SAS|SR|BB|I)[\w\-]*)\s*(?:\(([^)]+)\))?', re.IGNORECASE)
@@ -390,6 +393,126 @@ def parse_base_router_interfaces(config_text: str, port_desc_map: dict[str, str]
     return interfaces
 
 
+def parse_ies_interfaces(config_text: str, port_desc_map: dict[str, str]) -> list[dict]:
+    """
+    service > ies 섹션의 인터페이스 IP 추출 (BB 장비 전용)
+    Nokia 7750 SR IES(Internet Enhanced Service)에서 interface IP를 파싱.
+    구조: service > ies {id} > interface "{name}" create > address / sap / description
+    """
+    interfaces = []
+    lines = config_text.split('\n')
+
+    in_service = False
+    service_indent = -1
+    in_ies = False
+    ies_indent = -1
+    current_iface = None
+    iface_indent = -1
+
+    for line in lines:
+        raw = line.rstrip('\r\n')
+        trimmed = raw.strip()
+        if not trimmed:
+            continue
+        indent = len(raw) - len(raw.lstrip())
+
+        # service 섹션 진입
+        if not in_service and trimmed == 'service':
+            in_service = True
+            service_indent = indent
+            continue
+
+        if not in_service:
+            continue
+
+        # service 섹션 종료
+        if trimmed == 'exit' and indent == service_indent:
+            if current_iface:
+                interfaces.append(current_iface)
+                current_iface = None
+            in_service = False
+            in_ies = False
+            continue
+
+        # ies 블록 진입 (ies 10 name "10" customer 1 create 형태)
+        if not in_ies and RE_IES_HEADER.match(trimmed) and indent == service_indent + 4:
+            if current_iface:
+                interfaces.append(current_iface)
+                current_iface = None
+            in_ies = True
+            ies_indent = indent
+            continue
+
+        if not in_ies:
+            continue
+
+        # ies 블록 종료
+        if trimmed == 'exit' and indent == ies_indent:
+            if current_iface:
+                interfaces.append(current_iface)
+                current_iface = None
+            in_ies = False
+            continue
+
+        # interface 블록 시작 (interface "name" create)
+        if indent == ies_indent + 4 and RE_IES_IFACE.match(trimmed):
+            if current_iface:
+                interfaces.append(current_iface)
+            m = RE_IES_IFACE.match(trimmed)
+            current_iface = {
+                'interface_name': m.group(1),
+                'ip': '',
+                'port': '',
+                'interface_desc': '',
+                'admin_state': 'Active',
+            }
+            iface_indent = indent
+            continue
+
+        if current_iface is None:
+            continue
+
+        # interface 블록 종료
+        if trimmed == 'exit' and indent == iface_indent:
+            interfaces.append(current_iface)
+            current_iface = None
+            continue
+
+        # address (indent == iface_indent + 4 수준)
+        m = RE_ADDRESS.match(trimmed)
+        if m:
+            current_iface['ip'] = m.group(1)
+            continue
+
+        # SAP에서 포트 추출 (sap 1/2/6 create 또는 sap lag-1 create)
+        m = RE_SAP_PORT.match(trimmed)
+        if m:
+            current_iface['port'] = m.group(1)
+            continue
+
+        # description
+        m = RE_DESCRIPTION.match(trimmed)
+        if m:
+            current_iface['interface_desc'] = m.group(1)
+            continue
+
+        # admin state
+        if trimmed == 'no shutdown':
+            current_iface['admin_state'] = 'Active'
+        elif trimmed == 'shutdown':
+            current_iface['admin_state'] = 'Shutdown'
+
+    # 포트 description 보강
+    for iface in interfaces:
+        port = iface.get('port', '')
+        if port and port in port_desc_map:
+            iface['port_desc'] = port_desc_map[port]
+        else:
+            iface['port_desc'] = ''
+
+    return interfaces
+
+
 def parse_static_routes(config_text: str) -> list[dict]:
     """
     Base Router Static Route 추출 (description, admin_state 포함)
@@ -502,6 +625,7 @@ def parse_config_file(filepath: str) -> list[IpRecord]:
     device = extract_device_info(config_text, filename)
     port_desc_map = extract_port_descriptions(config_text)
     base_ifaces = parse_base_router_interfaces(config_text, port_desc_map)
+    ies_ifaces = parse_ies_interfaces(config_text, port_desc_map)
     static_routes = parse_static_routes(config_text)
 
     records: list[IpRecord] = []
@@ -545,8 +669,8 @@ def parse_config_file(filepath: str) -> list[IpRecord]:
             admin_state='Active',
         ))
 
-    # 2. Interface IP
-    for iface in base_ifaces:
+    # 2. Interface IP (router Base + IES 서비스)
+    for iface in base_ifaces + ies_ifaces:
         if not iface['ip']:
             continue
         iface_name = iface['interface_name']
@@ -599,15 +723,35 @@ def parse_all_configs(config_dir: str) -> list[dict]:
     """
     지정 디렉토리의 모든 .txt config 파일을 파싱.
     1단계: 각 파일 파싱
-    2단계: next-hop 역방향 맵 구축
-    3단계: Static Route의 peer_device 자동 채우기
+    2단계: 동일 장비(hostname 기준) 중복 파일 → 최신 날짜 파일만 유지
+    3단계: next-hop 역방향 맵 구축
+    4단계: Static Route의 peer_device 자동 채우기
     """
     config_path = Path(config_dir)
-    all_records: list[IpRecord] = []
 
+    # 파일별 파싱
+    file_records: dict[str, list[IpRecord]] = {}
     txt_files = sorted(config_path.glob('*.txt'))
     for f in txt_files:
-        all_records.extend(parse_config_file(str(f)))
+        records = parse_config_file(str(f))
+        if records:
+            file_records[str(f)] = records
+
+    # hostname 기준으로 최신 파일 선택
+    # value: (config_date, filepath) — 날짜 동일 시 파일명 알파벳 내림차순으로 tie-break
+    latest: dict[str, tuple[str, str]] = {}
+    for filepath, records in file_records.items():
+        hostname = records[0].device_name
+        config_date = records[0].config_date or ''
+        key = (config_date, filepath)
+        if hostname not in latest or key > latest[hostname]:
+            latest[hostname] = key
+
+    # 최신 파일의 레코드만 수집
+    latest_paths = {v[1] for v in latest.values()}
+    all_records: list[IpRecord] = []
+    for filepath in sorted(latest_paths):
+        all_records.extend(file_records[filepath])
 
     # ── Next-hop 역방향 맵 구축 ──
     # { IP주소: {device_name, interface_name, cidr} }
