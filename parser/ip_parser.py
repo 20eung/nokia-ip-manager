@@ -502,6 +502,14 @@ def parse_ies_interfaces(config_text: str, port_desc_map: dict[str, str]) -> lis
         elif trimmed == 'shutdown':
             current_iface['admin_state'] = 'Shutdown'
 
+    # SAP 없는 인터페이스: 이름에서 포트 추론 (p3/1/10 → 3/1/10)
+    _RE_IFACE_PORT = re.compile(r'^p(\d+/\d+/\d+(?:\.\d+)?)')
+    for iface in interfaces:
+        if not iface.get('port') and iface.get('interface_name'):
+            m = _RE_IFACE_PORT.match(iface['interface_name'])
+            if m:
+                iface['port'] = m.group(1)
+
     # 포트 description 보강
     for iface in interfaces:
         port = iface.get('port', '')
