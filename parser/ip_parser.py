@@ -75,6 +75,7 @@ RE_PORT_PHYSICAL  = re.compile(r'^port\s+(\d+/\d+/\d+(?:\.\d+)?)')
 RE_PORT_LAG       = re.compile(r'^lag\s+(\d+)')
 RE_IFACE_NAME     = re.compile(r'^interface\s+"([^"]+)"')
 RE_ADDRESS        = re.compile(r'^address\s+([\d.]+/\d+)')
+RE_SECONDARY      = re.compile(r'^secondary\s+([\d.]+/\d+)')
 RE_PORT_REF       = re.compile(r'^port\s+([\w/-]+)')
 RE_DESCRIPTION    = re.compile(r'^description\s+"([^"]+)"')
 RE_IES_HEADER     = re.compile(r'^ies\s+\d+')
@@ -344,6 +345,7 @@ def parse_base_router_interfaces(config_text: str, port_desc_map: dict[str, str]
                 current_iface = {
                     'interface_name': m.group(1),
                     'ip': '',
+                    'secondary_ips': [],
                     'port': '',
                     'interface_desc': '',
                     'admin_state': 'Shutdown',
@@ -360,10 +362,16 @@ def parse_base_router_interfaces(config_text: str, port_desc_map: dict[str, str]
             current_iface = None
             continue
 
-        # address
+        # address (primary)
         m = RE_ADDRESS.match(trimmed)
         if m:
             current_iface['ip'] = m.group(1)
+            continue
+
+        # secondary address — local_subnet_map 추론용으로만 수집 (IpRecord 미생성)
+        m = RE_SECONDARY.match(trimmed)
+        if m:
+            current_iface['secondary_ips'].append(m.group(1))
             continue
 
         # port
@@ -464,6 +472,7 @@ def parse_ies_interfaces(config_text: str, port_desc_map: dict[str, str]) -> lis
             current_iface = {
                 'interface_name': m.group(1),
                 'ip': '',
+                'secondary_ips': [],
                 'port': '',
                 'interface_desc': '',
                 'admin_state': 'Active',
@@ -480,10 +489,16 @@ def parse_ies_interfaces(config_text: str, port_desc_map: dict[str, str]) -> lis
             current_iface = None
             continue
 
-        # address (indent == iface_indent + 4 수준)
+        # address primary (indent == iface_indent + 4 수준)
         m = RE_ADDRESS.match(trimmed)
         if m:
             current_iface['ip'] = m.group(1)
+            continue
+
+        # secondary address — local_subnet_map 추론용으로만 수집 (IpRecord 미생성)
+        m = RE_SECONDARY.match(trimmed)
+        if m:
+            current_iface['secondary_ips'].append(m.group(1))
             continue
 
         # SAP에서 포트 추출 (sap 1/2/6 create 또는 sap lag-1 create)
@@ -727,17 +742,24 @@ def parse_config_file(filepath: str) -> list[IpRecord]:
     for _iface in base_ifaces + ies_ifaces:
         if not _iface.get('ip'):
             continue
+        _iface_key = (
+            _iface['interface_name'],
+            _iface.get('port', ''),
+            _iface.get('interface_desc', ''),
+            _iface.get('port_desc', ''),
+        )
         try:
             net = IPv4Network(_iface['ip'], strict=False)
-            local_subnet_map.append((
-                net,
-                _iface['interface_name'],
-                _iface.get('port', ''),
-                _iface.get('interface_desc', ''),
-                _iface.get('port_desc', ''),
-            ))
+            local_subnet_map.append((net, *_iface_key))
         except (AddressValueError, ValueError):
             pass
+        # secondary address도 동일 인터페이스의 서브넷으로 등록 (next-hop 추론 전용)
+        for sec_cidr in _iface.get('secondary_ips', []):
+            try:
+                sec_net = IPv4Network(sec_cidr, strict=False)
+                local_subnet_map.append((sec_net, *_iface_key))
+            except (AddressValueError, ValueError):
+                pass
 
     def find_egress_iface(nh_ip: str):
         """next-hop IP로 출구 인터페이스 정보 반환 (interface_name, port, iface_desc, port_desc)"""
