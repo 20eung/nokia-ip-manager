@@ -768,7 +768,8 @@ def parse_config_file(filepath: str) -> list[IpRecord]:
         try:
             addr = IPv4Address(nh_ip)
             for net, iface_name, port, iface_desc, port_desc in local_subnet_map:
-                if addr in net and str(addr) != str(net.network_address):
+                # /31(RFC 3021 P2P)은 두 주소 모두 유효 호스트 → network_address 제외 불필요
+                if addr in net and (net.prefixlen >= 31 or str(addr) != str(net.network_address)):
                     return iface_name, port, iface_desc, port_desc
         except (AddressValueError, ValueError):
             pass
